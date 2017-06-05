@@ -30,6 +30,7 @@ container:
     - docker push "$CI_REGISTRY_IMAGE:$IMAGE_TAG"
     - echo export PROMETHEUS_IMAGE=$CI_REGISTRY_IMAGE | tee release.env
     - echo export PROMETHEUS_TAG=$IMAGE_TAG | tee -a release.env
+    - cat release.env
   dependencies:
     - compile
   artifacts:
@@ -42,7 +43,7 @@ release:
   stage: release
   image: golang:1.8.1
   script:
-    - echo combining pipeline artifacts into a release 
+    - cat release.env
   dependencies:
     - container
   artifacts:
