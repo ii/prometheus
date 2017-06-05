@@ -11,6 +11,8 @@ before_script:
 compile:
   image: golang:1.8.1
   stage: build
+  environment:
+    CGO_ENABLED: 0
   script:
     - make -j $(getconf _NPROCESSORS_ONLN) build
   artifacts:
@@ -19,8 +21,8 @@ compile:
     expire_in: 4 weeks
 
 container:
-  stage: package
   image: docker:17.05.0
+  stage: package
   script:
     - IMAGE_TAG=${CI_COMMIT_REF_NAME}.${CI_COMMIT_SHA_SHORT}.${CI_JOB_ID}
     - docker login -u "gitlab-ci-token" -p "$CI_JOB_TOKEN" $CI_REGISTRY
