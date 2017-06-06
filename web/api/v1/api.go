@@ -97,7 +97,7 @@ type apiFunc func(r *http.Request) (interface{}, *apiError)
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
 type API struct {
-	Storage     storage.Storage
+	Queryable   promql.Queryable
 	QueryEngine *promql.Engine
 
 	targetRetriever       targetRetriever
@@ -107,10 +107,10 @@ type API struct {
 }
 
 // NewAPI returns an initialized API type.
-func NewAPI(qe *promql.Engine, st storage.Storage, tr targetRetriever, ar alertmanagerRetriever) *API {
+func NewAPI(qe *promql.Engine, q promql.Queryable, tr targetRetriever, ar alertmanagerRetriever) *API {
 	return &API{
 		QueryEngine:           qe,
-		Storage:               st,
+		Queryable:             q,
 		targetRetriever:       tr,
 		alertmanagerRetriever: ar,
 		now: time.Now,
@@ -276,7 +276,7 @@ func (api *API) labelValues(r *http.Request) (interface{}, *apiError) {
 	if !model.LabelNameRE.MatchString(name) {
 		return nil, &apiError{errorBadData, fmt.Errorf("invalid label name: %q", name)}
 	}
-	q, err := api.Storage.Querier(math.MinInt64, math.MaxInt64)
+	q, err := api.Queryable.Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		return nil, &apiError{errorExec, err}
 	}
@@ -333,7 +333,7 @@ func (api *API) series(r *http.Request) (interface{}, *apiError) {
 		matcherSets = append(matcherSets, matchers)
 	}
 
-	q, err := api.Storage.Querier(timestamp.FromTime(start), timestamp.FromTime(end))
+	q, err := api.Queryable.Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
 		return nil, &apiError{errorExec, err}
 	}

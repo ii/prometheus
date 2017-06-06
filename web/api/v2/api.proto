@@ -1,0 +1,64 @@
+syntax = "proto3";
+package apiv2;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+import "gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.goproto_getters_all) = false;
+
+message Empty {}
+
+// Matcher specifies a rule, which can match or set of labels or not.
+message LabelMatcher {
+  enum Type {
+    EQ  = 0;
+    NEQ = 1;
+    RE  = 2;
+    NRE = 3;
+  }
+  Type type    = 1;
+  string name  = 2;
+  string value = 3;
+}
+
+service TSDBAdmin {
+  rpc Reload(Empty) returns (Empty) {
+    option (google.api.http) = {
+      get: "/tsdb/admin/reload"
+    };
+  }
+
+  rpc Snapshot(TSDBAdminSnapshotRequest) returns (TSDBAdminSnapshotResponse) {
+    option (google.api.http) = {
+      get: "/tsdb/admin/snapshot"
+    };
+  }
+
+  rpc DeleteSeries(TSDBAdminDeleteRequest) returns (TSDBAdminDeleteResponse) {
+    option (google.api.http) = {
+      delete: "/tsdb/admin/series"
+    };
+  }
+}
+
+message TSDBAdminDeleteRequest {
+  google.protobuf.Timestamp starts_at = 1 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+  google.protobuf.Timestamp ends_at   = 2 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+  repeated LabelMatcher matchers      = 3;
+}
+
+message TSDBAdminDeleteResponse {
+
+}
+
+message TSDBAdminSnapshotRequest {
+  string dir = 1;
+}
+
+message TSDBAdminSnapshotResponse {
+
+}

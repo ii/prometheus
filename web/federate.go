@@ -29,6 +29,7 @@ import (
 	"github.com/prometheus/prometheus/pkg/value"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/storage/tsdb"
 )
 
 var (
@@ -62,7 +63,7 @@ func (h *Handler) federation(w http.ResponseWriter, req *http.Request) {
 	)
 	w.Header().Set("Content-Type", string(format))
 
-	q, err := h.storage.Querier(mint, maxt)
+	q, err := tsdb.Adapter(h.storage).Querier(mint, maxt)
 	if err != nil {
 		federationErrors.Inc()
 		http.Error(w, err.Error(), http.StatusInternalServerError)

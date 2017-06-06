@@ -30,15 +30,20 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc"
+
 	pprof_runtime "runtime/pprof"
 	template_text "text/template"
 
+	"github.com/cockroachdb/cmux"
 	"github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
+	ptsdb "github.com/prometheus/prometheus/storage/tsdb"
+	"github.com/prometheus/tsdb"
 	"golang.org/x/net/context"
 	"golang.org/x/net/netutil"
 
@@ -48,10 +53,10 @@ import (
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/retrieval"
 	"github.com/prometheus/prometheus/rules"
-	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/template"
 	"github.com/prometheus/prometheus/util/httputil"
 	api_v1 "github.com/prometheus/prometheus/web/api/v1"
+	apiv2 "github.com/prometheus/prometheus/web/api/v2"
 	"github.com/prometheus/prometheus/web/ui"
 )
 
@@ -63,13 +68,12 @@ type Handler struct {
 	ruleManager   *rules.Manager
 	queryEngine   *promql.Engine
 	context       context.Context
-	storage       storage.Storage
+	storage       *tsdb.DB
 	notifier      *notifier.Notifier
 
 	apiV1 *api_v1.API
 
 	router       *route.Router
-	listenErrCh  chan error
 	quitCh       chan struct{}
 	reloadCh     chan chan error
 	options      *Options
@@ -108,7 +112,7 @@ type PrometheusVersion struct {
 // Options for the web Handler.
 type Options struct {
 	Context       context.Context
-	Storage       storage.Storage
+	Storage       *tsdb.DB
 	QueryEngine   *promql.Engine
 	TargetManager *retrieval.TargetManager
 	RuleManager   *rules.Manager
@@ -140,7 +144,6 @@ func New(o *Options) *Handler {
 
 	h := &Handler{
 		router:      router,
-		listenErrCh: make(chan error),
 		quitCh:      make(chan struct{}),
 		reloadCh:    make(chan chan error),
 		options:     o,
@@ -156,7 +159,7 @@ func New(o *Options) *Handler {
 		storage:       o.Storage,
 		notifier:      o.Notifier,
 
-		apiV1: api_v1.NewAPI(o.QueryEngine, o.Storage, o.TargetManager, o.Notifier),
+		apiV1: api_v1.NewAPI(o.QueryEngine, ptsdb.Adapter(o.Storage), o.TargetManager, o.Notifier),
 		now:   model.Now,
 	}
 
@@ -240,11 +243,6 @@ func serveStaticAsset(w http.ResponseWriter, req *http.Request) {
 	http.ServeContent(w, req, info.Name(), info.ModTime(), bytes.NewReader(file))
 }
 
-// ListenError returns the receive-only channel that signals errors while starting the web server.
-func (h *Handler) ListenError() <-chan error {
-	return h.listenErrCh
-}
-
 // Quit returns the receive-only quit channel.
 func (h *Handler) Quit() <-chan struct{} {
 	return h.quitCh
@@ -256,24 +254,46 @@ func (h *Handler) Reload() <-chan chan error {
 }
 
 // Run serves the HTTP endpoints.
-func (h *Handler) Run() {
+func (h *Handler) Run(ctx context.Context) error {
 	log.Infof("Listening on %s", h.options.ListenAddress)
+
+	l, err := net.Listen("tcp", h.options.ListenAddress)
+	if err != nil {
+		return err
+	}
+	l = netutil.LimitListener(l, h.options.MaxConnections)
+
+	var (
+		m       = cmux.New(l)
+		grpcl   = m.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
+		httpl   = m.Match(cmux.HTTP1Fast())
+		grpcSrv = grpc.NewServer()
+	)
+	av2 := apiv2.New(h.options.Storage)
+	av2.RegisterGRPC(grpcSrv)
+
+	hh, err := av2.HTTPHandler(grpcl.Addr().String())
+	if err != nil {
+		return err
+	}
+
 	operationName := nethttp.OperationNameFunc(func(r *http.Request) string {
 		return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
 	})
-	server := &http.Server{
-		Addr:        h.options.ListenAddress,
-		Handler:     nethttp.Middleware(opentracing.GlobalTracer(), h.router, operationName),
+	mux := http.NewServeMux()
+	mux.Handle("/", h.router)
+	mux.Handle("/api/v2/", http.StripPrefix("/api/v2", hh))
+
+	httpSrv := &http.Server{
+		Handler:     nethttp.Middleware(opentracing.GlobalTracer(), mux, operationName),
 		ErrorLog:    log.NewErrorLogger(),
 		ReadTimeout: h.options.ReadTimeout,
 	}
-	listener, err := net.Listen("tcp", h.options.ListenAddress)
-	if err != nil {
-		h.listenErrCh <- err
-	} else {
-		limitedListener := netutil.LimitListener(listener, h.options.MaxConnections)
-		h.listenErrCh <- server.Serve(limitedListener)
-	}
+
+	go httpSrv.Serve(httpl)
+	go grpcSrv.Serve(grpcl)
+
+	return m.Serve()
 }
 
 func (h *Handler) alerts(w http.ResponseWriter, r *http.Request) {
