@@ -17,12 +17,14 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -709,6 +711,8 @@ func (s samples) Less(i, j int) bool {
 	return s[i].t < s[j].t
 }
 
+var errInvalidLabelValue = errors.New("invalid label value")
+
 func (sl *scrapeLoop) append(b []byte, ts time.Time) (total, added int, err error) {
 	var (
 		app           = sl.appender()
@@ -762,6 +766,14 @@ loop:
 		if !ok {
 			var lset labels.Labels
 			mets := p.Metric(&lset)
+
+			for _, l := range lset {
+				if !utf8.ValidString(l.Value) {
+					err = errInvalidLabelValue
+					sl.l.With("timeseries", string(met)).Debug("Invalid UTF-8 label value")
+					break loop
+				}
+			}
 
 			var ref string
 			ref, err = app.Add(lset, t, v)
