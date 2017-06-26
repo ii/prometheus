@@ -428,8 +428,9 @@ type loop interface {
 }
 
 type lsetCacheEntry struct {
-	lset labels.Labels
-	hash uint64
+	metric string
+	lset   labels.Labels
+	hash   uint64
 }
 
 type refEntry struct {
@@ -517,7 +518,7 @@ func (c *scrapeCache) addRef(met, ref string, lset labels.Labels) {
 	// met is the raw string the metric was ingested as. The label set is not ordered
 	// and thus it's not suitable to uniquely identify cache entries.
 	// We store a hash over the label set instead.
-	c.lsets[ref] = &lsetCacheEntry{lset: lset, hash: lset.Hash()}
+	c.lsets[ref] = &lsetCacheEntry{metric: met, lset: lset, hash: lset.Hash()}
 }
 
 func (c *scrapeCache) trackStaleness(ref string) {
@@ -769,7 +770,13 @@ loop:
 		}
 		if !ok {
 			var lset labels.Labels
-			mets := p.Metric(&lset)
+			var mets string
+			if e, ok := sl.cache.lsets[ref]; ok {
+				mets = e.metric
+				lset = e.lset
+			} else {
+				mets = p.Metric(&lset)
+			}
 
 			var ref string
 			ref, err = app.Add(lset, t, v)
