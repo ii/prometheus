@@ -140,6 +140,7 @@ func newDBMetrics(db *DB, r prometheus.Registerer) *dbMetrics {
 	m := &dbMetrics{}
 
 	m.activeAppenders = prometheus.NewGauge(prometheus.GaugeOpts{
+
 		Name: "tsdb_active_appenders",
 		Help: "Number of currently active appender transactions",
 	})
