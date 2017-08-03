@@ -294,7 +294,7 @@ func (h *Handler) Run(ctx context.Context) error {
 	var (
 		m       = cmux.New(l)
 		grpcl   = m.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
-		httpl   = m.Match(cmux.HTTP1Fast())
+		httpl   = m.Match(cmux.Any())
 		grpcSrv = grpc.NewServer()
 	)
 	av2 := api_v2.New(
@@ -346,8 +346,16 @@ func (h *Handler) Run(ctx context.Context) error {
 		ReadTimeout: h.options.ReadTimeout,
 	}
 
-	go httpSrv.Serve(httpl)
-	go grpcSrv.Serve(grpcl)
+	go func() {
+		if err := httpSrv.Serve(httpl); err != nil {
+			log.With("err", err).Warnf("error serving HTTP")
+		}
+	}()
+	go func() {
+		if err := grpcSrv.Serve(grpcl); err != nil {
+			log.With("err", err).Warnf("error serving HTTP")
+		}
+	}()
 
 	return m.Serve()
 }

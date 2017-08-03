@@ -30,6 +30,18 @@ import (
 	"github.com/prometheus/tsdb/labels"
 )
 
+// ExponentialBlockRanges returns the time ranges based on the stepSize
+func ExponentialBlockRanges(minSize int64, steps, stepSize int) []int64 {
+	ranges := make([]int64, 0, steps)
+	curRange := minSize
+	for i := 0; i < steps; i++ {
+		ranges = append(ranges, curRange)
+		curRange = curRange * int64(stepSize)
+	}
+
+	return ranges
+}
+
 // Compactor provides compaction against an underlying storage
 // of time series data.
 type Compactor interface {
@@ -87,7 +99,7 @@ func newCompactorMetrics(r prometheus.Registerer) *compactorMetrics {
 }
 
 type compactorOptions struct {
-	maxBlockRange uint64
+	blockRanges []int64
 }
 
 func newCompactor(dir string, r prometheus.Registerer, l log.Logger, opts *compactorOptions) *compactor {
@@ -133,37 +145,145 @@ func (c *compactor) Plan() ([][]string, error) {
 		return dms[i].meta.MinTime < dms[j].meta.MinTime
 	})
 
-	if len(dms) == 0 {
+	if len(dms) <= 1 {
 		return nil, nil
 	}
 
-	sliceDirs := func(i, j int) [][]string {
+	sliceDirs := func(dms []dirMeta) [][]string {
+		if len(dms) == 0 {
+			return nil
+		}
 		var res []string
-		for k := i; k < j; k++ {
-			res = append(res, dms[k].dir)
+		for _, dm := range dms {
+			res = append(res, dm.dir)
 		}
 		return [][]string{res}
 	}
 
-	// Then we care about compacting multiple blocks, starting with the oldest.
-	for i := 0; i < len(dms)-compactionBlocksLen+1; i++ {
-		if c.match(dms[i : i+3]) {
-			return sliceDirs(i, i+compactionBlocksLen), nil
+	planDirs := sliceDirs(c.selectDirs(dms))
+	if len(dirs) > 1 {
+		return planDirs, nil
+	}
+
+	// Compact any blocks that have >5% tombstones.
+	for i := len(dms) - 1; i >= 0; i-- {
+		meta := dms[i].meta
+		if meta.MaxTime-meta.MinTime < c.opts.blockRanges[len(c.opts.blockRanges)/2] {
+			break
+		}
+
+		if meta.Stats.NumSeries/meta.Stats.NumTombstones <= 20 { // 5%
+			return [][]string{{dms[i].dir}}, nil
 		}
 	}
 
 	return nil, nil
 }
 
-func (c *compactor) match(dirs []dirMeta) bool {
-	g := dirs[0].meta.Compaction.Generation
+// selectDirs returns the dir metas that should be compacted into a single new block.
+// If only a single block range is configured, the result is always nil.
+func (c *compactor) selectDirs(ds []dirMeta) []dirMeta {
+	if len(c.opts.blockRanges) < 2 || len(ds) < 1 {
+		return nil
+	}
 
-	for _, d := range dirs {
-		if d.meta.Compaction.Generation != g {
-			return false
+	highTime := ds[len(ds)-1].meta.MinTime
+
+	for _, iv := range c.opts.blockRanges[1:] {
+		fmt.Println("find compactables for size", iv)
+		parts := splitByRange(ds, iv)
+		if len(parts) == 0 {
+			continue
+		}
+		fmt.Println(len(parts), "sections found")
+
+		var (
+			p    = parts[0]
+			mint = p[0].meta.MinTime
+			maxt = p[len(p)-1].meta.MaxTime
+		)
+		if (maxt-mint == iv || maxt <= highTime) && len(p) > 1 {
+			fmt.Println(p)
+			return p
 		}
 	}
-	return uint64(dirs[len(dirs)-1].meta.MaxTime-dirs[0].meta.MinTime) <= c.opts.maxBlockRange
+
+	return nil
+	// return selectRecurse(ds, c.opts.blockRanges)
+}
+
+// func selectRecurse(dms []dirMeta, intervals []int64) []dirMeta {
+// 	if len(intervals) == 0 {
+// 		return dms
+// 	}
+// 	// Get the blocks by the max interval
+// 	blocks := splitByRange(dms, intervals[len(intervals)-1])
+// 	dirs := []dirMeta{}
+// 	for i := len(blocks) - 1; i >= 0; i-- {
+// 		// We need to choose the oldest blocks to compact. If there are a couple of blocks in
+// 		// the largest interval, we should compact those first.
+// 		if len(blocks[i]) > 1 {
+// 			dirs = blocks[i]
+// 			break
+// 		}
+// 	}
+
+// 	// If there are too many blocks, see if a smaller interval will catch them.
+// 	// i.e, if we have 0-20, 60-80, 80-100; all fall under 0-240, but we'd rather compact 60-100
+// 	// than all at once.
+// 	// Again if have 0-1d, 1d-2d, 3-6d we compact 0-1d, 1d-2d to compact it into the 0-3d block
+// 	// instead of compacting all three. This is to honor the boundaries as much as possible.
+// 	if len(dirs) > 2 {
+// 		smallerDirs := selectRecurse(dirs, intervals[:len(intervals)-1])
+// 		if len(smallerDirs) > 1 {
+// 			return smallerDirs
+// 		}
+// 	}
+
+// 	return dirs
+// }
+
+// splitByRange splits the directories by the time range. The range sequence starts at 0.
+//
+// For example, if we have blocks [0-10, 10-20, 50-60, 90-100] and the split range tr is 30
+// it returns [0-10, 10-20], [50-60], [90-100].
+func splitByRange(ds []dirMeta, tr int64) [][]dirMeta {
+	var splitDirs [][]dirMeta
+
+	for i := 0; i < len(ds); {
+		var (
+			group []dirMeta
+			t0    int64
+			m     = ds[i].meta
+		)
+		// Compute start of aligned time range of size tr closest to the current block's start.
+		if m.MinTime >= 0 {
+			t0 = tr * (m.MinTime / tr)
+		} else {
+			t0 = tr * ((m.MinTime - tr + 1) / tr)
+		}
+		// Skip blocks that don't fall into the range. This can happen via mis-alignment or
+		// by being the multiple of the intended range.
+		if ds[i].meta.MinTime < t0 || ds[i].meta.MaxTime > t0+tr {
+			i++
+			continue
+		}
+
+		// Add all dirs to the current group that are within [t0, t0+tr].
+		for ; i < len(ds); i++ {
+			// Either the block falls into the next range or doesn't fit at all (checked above).
+			if ds[i].meta.MinTime < t0 || ds[i].meta.MaxTime > t0+tr {
+				break
+			}
+			group = append(group, ds[i])
+		}
+
+		if len(group) > 0 {
+			splitDirs = append(splitDirs, group)
+		}
+	}
+
+	return splitDirs
 }
 
 func compactBlockMetas(blocks ...BlockMeta) (res BlockMeta) {
@@ -173,8 +293,6 @@ func compactBlockMetas(blocks ...BlockMeta) (res BlockMeta) {
 	sources := map[ulid.ULID]struct{}{}
 
 	for _, b := range blocks {
-		res.Stats.NumSamples += b.Stats.NumSamples
-
 		if b.Compaction.Generation > res.Compaction.Generation {
 			res.Compaction.Generation = b.Compaction.Generation
 		}
@@ -345,6 +463,11 @@ func populateBlock(blocks []Block, indexw IndexWriter, chunkw ChunkWriter) (*Blo
 	for set.Next() {
 		lset, chks, dranges := set.At() // The chunks here are not fully deleted.
 
+		// Skip the series with all deleted chunks.
+		if len(chks) == 0 {
+			continue
+		}
+
 		if len(dranges) > 0 {
 			// Re-encode the chunk to not have deleted values.
 			for _, chk := range chks {
@@ -374,6 +497,9 @@ func populateBlock(blocks []Block, indexw IndexWriter, chunkw ChunkWriter) (*Blo
 
 		meta.Stats.NumChunks += uint64(len(chks))
 		meta.Stats.NumSeries++
+		for _, chk := range chks {
+			meta.Stats.NumSamples += uint64(chk.Chunk.NumSamples())
+		}
 
 		for _, l := range lset {
 			valset, ok := values[l.Name]
