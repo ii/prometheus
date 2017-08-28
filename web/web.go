@@ -38,6 +38,7 @@ import (
 	"github.com/opentracing-contrib/go-stdlib/nethttp"
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
@@ -201,7 +202,7 @@ func New(o *Options) *Handler {
 
 	router.Get("/heap", readyf(instrf("heap", dumpHeap)))
 
-	router.Get(o.MetricsPath, readyf(prometheus.Handler().ServeHTTP))
+	router.Get(o.MetricsPath, readyf(promhttp.Handler().ServeHTTP))
 
 	router.Get("/federate", readyf(instrh("federate", httputil.CompressionHandler{
 		Handler: http.HandlerFunc(h.federation),

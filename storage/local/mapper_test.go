@@ -62,7 +62,7 @@ func TestFPMapper(t *testing.T) {
 	p, closer := newTestPersistence(t, 1)
 	defer closer.Close()
 
-	mapper, err := newFPMapper(sm, p)
+	mapper, _ := newFPMapper(sm, p)
 
 	// Everything is empty, resolving a FP should do nothing.
 	gotFP := mapper.mapFP(fp1, cm11)
@@ -223,7 +223,7 @@ func TestFPMapper(t *testing.T) {
 	if wantFP := model.Fingerprint(5); gotFP != wantFP {
 		t.Errorf("got fingerprint %v, want fingerprint %v", gotFP, wantFP)
 	}
-	err = mapper.checkpoint()
+	err := mapper.checkpoint()
 	if err != nil {
 		t.Fatal(err)
 	}

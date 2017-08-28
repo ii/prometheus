@@ -64,7 +64,7 @@ func TestStoreHTTPErrorHandling(t *testing.T) {
 			panic(err)
 		}
 
-		c, err := NewClient(0, &clientConfig{
+		c, _ := NewClient(0, &clientConfig{
 			url:     &config.URL{serverURL},
 			timeout: model.Duration(time.Second),
 		})
