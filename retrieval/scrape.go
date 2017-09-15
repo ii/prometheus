@@ -487,6 +487,7 @@ type scrapeLoop struct {
 // storage references. Additionally, it tracks staleness of series between
 // scrapes.
 type scrapeCache struct {
+	l    log.Logger
 	iter uint64 // Current scrape iteration.
 
 	refs  map[string]*refEntry       // Parsed string to ref.
@@ -504,8 +505,9 @@ type scrapeCache struct {
 	seriesPrev map[uint64]labels.Labels
 }
 
-func newScrapeCache() *scrapeCache {
+func newScrapeCache(l log.Logger) *scrapeCache {
 	return &scrapeCache{
+		l:          l,
 		refs:       map[string]*refEntry{},
 		lsets:      map[uint64]*lsetCacheEntry{},
 		dropped:    map[string]*uint64{},
@@ -522,6 +524,12 @@ func (c *scrapeCache) iterDone() {
 		if e.lastIter < c.iter {
 			delete(c.refs, s)
 			delete(c.lsets, e.ref)
+
+			for mets, e2 := range c.refs {
+				if e2.ref == e.ref {
+					c.l.Warnf("iterDone: deleted lset %s for ref %d; entry for %s with same ref still exists", s, e.ref, mets)
+				}
+			}
 		}
 	}
 	for s, iter := range c.dropped {
@@ -554,10 +562,19 @@ func (c *scrapeCache) addRef(met string, ref uint64, lset labels.Labels, hash ui
 	if ref == 0 {
 		return
 	}
+	if prev, ok := c.lsets[ref]; ok && !labels.Equal(prev.lset, lset) {
+		c.l.Warnf("addRef: different label set %s for ref %d with previous label set %s", lset, ref, prev.lset)
+	}
 	// Clean up the label set cache before overwriting the ref for a previously seen
 	// metric representation. It won't be caught by the cleanup in iterDone otherwise.
 	if e, ok := c.refs[met]; ok {
 		delete(c.lsets, e.ref)
+
+		for mets, e2 := range c.refs {
+			if e2.ref == e.ref {
+				c.l.Warnf("addRef: deleted lset %s for ref %d; entry for %s with same ref still exists", met, e.ref, mets)
+			}
+		}
 	}
 	c.refs[met] = &refEntry{ref: ref, lastIter: c.iter}
 	// met is the raw string the metric was ingested as. The label set is not ordered
@@ -611,7 +628,7 @@ func newScrapeLoop(
 	sl := &scrapeLoop{
 		scraper:             sc,
 		buffers:             buffers,
-		cache:               newScrapeCache(),
+		cache:               newScrapeCache(l),
 		appender:            appender,
 		sampleMutator:       sampleMutator,
 		reportSampleMutator: reportSampleMutator,
@@ -822,8 +839,13 @@ loop:
 		}
 		ref, ok := sl.cache.getRef(yoloString(met))
 		if ok {
-			lset := sl.cache.lsets[ref].lset
-			switch err = app.AddFast(lset, ref, t, v); err {
+			e, ok := sl.cache.lsets[ref]
+			if !ok {
+				sl.l.With("timeseries", string(met)).Warnf("no lset entry found for ref %d", ref)
+				continue
+			}
+			// lset := sl.cache.lsets[ref].lset
+			switch err = app.AddFast(e.lset, ref, t, v); err {
 			case nil:
 				if tp == nil {
 					e := sl.cache.lsets[ref]
