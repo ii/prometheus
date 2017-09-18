@@ -909,6 +909,7 @@ loop:
 				added++
 				continue
 			default:
+				sl.l.With("timeseries", string(met)).With("err", err).Debug("unexpected error")
 				break loop
 			}
 			if tp == nil {

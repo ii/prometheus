@@ -14,9 +14,12 @@
 package tsdb
 
 import (
+	"os"
+	"sync"
 	"time"
 	"unsafe"
 
+	"github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
@@ -25,6 +28,55 @@ import (
 	"github.com/prometheus/tsdb"
 	tsdbLabels "github.com/prometheus/tsdb/labels"
 )
+
+var ErrNotReady = errors.New("TSDB not ready")
+
+type ReadyStorage struct {
+	mtx sync.RWMutex
+	a   *adapter
+}
+
+func (s *ReadyStorage) Set(db *tsdb.DB) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
+	s.a = &adapter{db: db}
+}
+
+func (s *ReadyStorage) Get() *tsdb.DB {
+	if x := s.get(); x != nil {
+		return x.db
+	}
+	return nil
+}
+
+func (s *ReadyStorage) get() *adapter {
+	s.mtx.RLock()
+	x := s.a
+	s.mtx.RUnlock()
+	return x
+}
+
+func (s *ReadyStorage) Querier(mint, maxt int64) (storage.Querier, error) {
+	if x := s.get(); x != nil {
+		return x.Querier(mint, maxt)
+	}
+	return nil, ErrNotReady
+}
+
+func (s *ReadyStorage) Appender() (storage.Appender, error) {
+	if x := s.get(); x != nil {
+		return x.Appender()
+	}
+	return nil, ErrNotReady
+}
+
+func (s *ReadyStorage) Close() error {
+	if x := s.Get(); x != nil {
+		return x.Close()
+	}
+	return nil
+}
 
 func Adapter(db *tsdb.DB) storage.Storage {
 	return &adapter{db: db}
@@ -66,8 +118,9 @@ func Open(path string, r prometheus.Registerer, opts *Options) (*tsdb.DB, error)
 			break
 		}
 	}
+	logger := log.NewLogfmtLogger(log.NewSyncWriter(os.Stdout))
 
-	db, err := tsdb.Open(path, nil, r, &tsdb.Options{
+	db, err := tsdb.Open(path, logger, r, &tsdb.Options{
 		WALFlushInterval:  10 * time.Second,
 		RetentionDuration: uint64(time.Duration(opts.Retention).Seconds() * 1000),
 		BlockRanges:       rngs,
