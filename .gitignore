@@ -4,6 +4,7 @@
 /*.yaml
 /*.yml
 /*.rules
+!/example.rules
 *.exe
 
 # Editor files #
