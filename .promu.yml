@@ -18,6 +18,7 @@ tarball:
         - consoles
         - console_libraries
         - documentation/examples/prometheus.yml
+        - example.rules
         - LICENSE
         - NOTICE
 crossbuild:
