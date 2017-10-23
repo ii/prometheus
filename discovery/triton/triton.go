@@ -14,6 +14,7 @@
 package triton
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -27,7 +28,6 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/util/httputil"
-	"golang.org/x/net/context"
 )
 
 const (

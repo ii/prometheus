@@ -15,6 +15,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,7 +49,6 @@ import (
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/tsdb"
-	"golang.org/x/net/context"
 	"golang.org/x/net/netutil"
 
 	"github.com/mwitkow/go-conntrack"

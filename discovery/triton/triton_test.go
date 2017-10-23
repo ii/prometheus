@@ -14,6 +14,7 @@
 package triton
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -26,7 +27,6 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/config"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 )
 
 var (

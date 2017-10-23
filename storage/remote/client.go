@@ -16,6 +16,7 @@ package remote
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -24,7 +25,6 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/snappy"
-	"golang.org/x/net/context"
 	"golang.org/x/net/context/ctxhttp"
 
 	"github.com/prometheus/common/model"
