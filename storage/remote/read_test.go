@@ -18,10 +18,8 @@ import (
 	"reflect"
 	"sort"
 	"testing"
-	"time"
 
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage"
@@ -80,11 +78,7 @@ func TestAddExternalLabels(t *testing.T) {
 	}
 
 	for i, test := range tests {
-		q := querier{
-			externalLabels: test.el,
-		}
-
-		matchers, added := q.addExternalLabels(test.inMatchers)
+		matchers, added := addExternalLabels(test.el, test.inMatchers)
 
 		sort.Slice(test.outMatchers, func(i, j int) bool { return test.outMatchers[i].Name < test.outMatchers[j].Name })
 		sort.Slice(matchers, func(i, j int) bool { return matchers[i].Name < matchers[j].Name })
@@ -133,58 +127,57 @@ func TestSeriesSetFilter(t *testing.T) {
 	}
 }
 
-type mockMergeQuerier struct{ queriersCount int }
+type testQuerier struct {
+	ctx        context.Context
+	mint, maxt int64
 
-func (*mockMergeQuerier) Select(...*labels.Matcher) storage.SeriesSet { return nil }
-func (*mockMergeQuerier) LabelValues(name string) ([]string, error)   { return nil, nil }
-func (*mockMergeQuerier) Close() error                                { return nil }
+	storage.Querier
+}
 
-func TestRemoteStorageQuerier(t *testing.T) {
+func TestPreferLocalFilter(t *testing.T) {
+	ctx := context.Background()
+
 	tests := []struct {
-		localStartTime        int64
-		readRecentClients     []bool
-		mint                  int64
-		maxt                  int64
-		expectedQueriersCount int
+		localStartTime int64
+		mint           int64
+		maxt           int64
+		querier        storage.Querier
 	}{
 		{
-			localStartTime:    int64(20),
-			readRecentClients: []bool{true, true, false},
-			mint:              int64(0),
-			maxt:              int64(50),
-			expectedQueriersCount: 3,
+			localStartTime: int64(100),
+			mint:           int64(0),
+			maxt:           int64(50),
+			querier:        testQuerier{ctx: ctx, mint: 0, maxt: 50},
 		},
 		{
-			localStartTime:    int64(20),
-			readRecentClients: []bool{true, true, false},
-			mint:              int64(30),
-			maxt:              int64(50),
-			expectedQueriersCount: 2,
+			localStartTime: int64(20),
+			mint:           int64(0),
+			maxt:           int64(50),
+			querier:        testQuerier{ctx: ctx, mint: 0, maxt: 20},
+		},
+		{
+			localStartTime: int64(20),
+			mint:           int64(30),
+			maxt:           int64(50),
+			querier:        storage.NoopQuerier(),
 		},
 	}
 
 	for i, test := range tests {
-		s := NewStorage(nil, func() (int64, error) { return test.localStartTime, nil })
-		s.clients = []*Client{}
-		for _, readRecent := range test.readRecentClients {
-			c, _ := NewClient(0, &ClientConfig{
-				URL:              nil,
-				Timeout:          model.Duration(30 * time.Second),
-				HTTPClientConfig: config.HTTPClientConfig{},
-				ReadRecent:       readRecent,
-			})
-			s.clients = append(s.clients, c)
-		}
-		// overrides mergeQuerier to mockMergeQuerier so we can reflect its type
-		newMergeQueriers = func(queriers []storage.Querier) storage.Querier {
-			return &mockMergeQuerier{queriersCount: len(queriers)}
+		fn := PreferLocalFilter(
+			func() (int64, error) { return test.localStartTime, nil },
+			func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+				return testQuerier{ctx: ctx, mint: mint, maxt: maxt}, nil
+			},
+		)
+
+		querier, err := fn(ctx, test.mint, test.maxt)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		querier, _ := s.Querier(context.Background(), test.mint, test.maxt)
-		actualQueriersCount := reflect.ValueOf(querier).Interface().(*mockMergeQuerier).queriersCount
-
-		if !reflect.DeepEqual(actualQueriersCount, test.expectedQueriersCount) {
-			t.Fatalf("%d. unexpected queriers count; want %v, got %v", i, test.expectedQueriersCount, actualQueriersCount)
+		if test.querier != querier {
+			t.Errorf("%d. expected quierer %+v, got %+v", i, test.querier, querier)
 		}
 	}
 }

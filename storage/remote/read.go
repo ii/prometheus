@@ -21,43 +21,43 @@ import (
 	"github.com/prometheus/prometheus/storage"
 )
 
-// Querier returns a new Querier on the storage.
-func (r *Storage) Querier(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
-	r.mtx.Lock()
-	defer r.mtx.Unlock()
-
-	queriers := make([]storage.Querier, 0, len(r.clients))
-	localStartTime, err := r.localStartTimeCallback()
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range r.clients {
-		cmaxt := maxt
-		if !c.readRecent {
-			// Avoid queries whose timerange is later than the first timestamp in local DB.
-			if mint > localStartTime {
-				continue
-			}
-			// Query only samples older than the first timestamp in local DB.
-			if maxt > localStartTime {
-				cmaxt = localStartTime
-			}
+// PreferLocalFilter returns a QuerierFunc which creates a NoopQuerier if
+// requested timeframe can be answered completely by the local TSDB, and reduces
+// maxt if the timeframe can be partially answered by TSDB.
+func PreferLocalFilter(cb startTimeCallback, next QuerierFunc) QuerierFunc {
+	return func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+		localStartTime, err := cb()
+		if err != nil {
+			return nil, err
 		}
-		queriers = append(queriers, &querier{
-			ctx:            ctx,
-			mint:           mint,
-			maxt:           cmaxt,
-			client:         c,
-			externalLabels: r.externalLabels,
-		})
+		cmaxt := maxt
+		// Avoid queries whose timerange is later than the first timestamp in local DB.
+		if mint > localStartTime {
+			return storage.NoopQuerier(), nil
+		}
+		// Query only samples older than the first timestamp in local DB.
+		if maxt > localStartTime {
+			cmaxt = localStartTime
+		}
+		return next(ctx, mint, cmaxt)
 	}
-	return newMergeQueriers(queriers), nil
 }
 
-// Store it in variable to make it mockable in tests since a mergeQuerier is not publicly exposed.
-var newMergeQueriers = storage.NewMergeQuerier
+// MakeQuerierFunc returns a QuerierFunc which creates a Querier using the given
+// remote.Client.
+func MakeQuerierFunc(c *Client, externalLabels model.LabelSet) QuerierFunc {
+	return func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+		return &querier{
+			ctx:            ctx,
+			mint:           mint,
+			maxt:           maxt,
+			client:         c,
+			externalLabels: externalLabels,
+		}, nil
+	}
+}
 
-// Querier is an adapter to make a Client usable as a storage.Querier.
+// querier is an adapter to make a Client usable as a storage.Querier.
 type querier struct {
 	ctx            context.Context
 	mint, maxt     int64
@@ -67,7 +67,7 @@ type querier struct {
 
 // Select returns a set of series that matches the given label matchers.
 func (q *querier) Select(matchers ...*labels.Matcher) storage.SeriesSet {
-	m, added := q.addExternalLabels(matchers)
+	m, added := addExternalLabels(q.externalLabels, matchers)
 
 	query, err := ToQuery(q.mint, q.maxt, m)
 	if err != nil {
@@ -83,12 +83,6 @@ func (q *querier) Select(matchers ...*labels.Matcher) storage.SeriesSet {
 
 	return newSeriesSetFilter(seriesSet, added)
 }
-
-type byLabel []storage.Series
-
-func (a byLabel) Len() int           { return len(a) }
-func (a byLabel) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a byLabel) Less(i, j int) bool { return labels.Compare(a[i].Labels(), a[j].Labels()) < 0 }
 
 // LabelValues returns all potential values for a label name.
 func (q *querier) LabelValues(name string) ([]string, error) {
@@ -107,12 +101,12 @@ func (q *querier) Close() error {
 // We return the new set of matchers, along with a map of labels for which
 // matchers were added, so that these can later be removed from the result
 // time series again.
-func (q *querier) addExternalLabels(matchers []*labels.Matcher) ([]*labels.Matcher, model.LabelSet) {
-	el := make(model.LabelSet, len(q.externalLabels))
-	for k, v := range q.externalLabels {
+func addExternalLabels(externalLabels model.LabelSet, ms []*labels.Matcher) ([]*labels.Matcher, model.LabelSet) {
+	el := make(model.LabelSet, len(externalLabels))
+	for k, v := range externalLabels {
 		el[k] = v
 	}
-	for _, m := range matchers {
+	for _, m := range ms {
 		if _, ok := el[model.LabelName(m.Name)]; ok {
 			delete(el, model.LabelName(m.Name))
 		}
@@ -122,9 +116,9 @@ func (q *querier) addExternalLabels(matchers []*labels.Matcher) ([]*labels.Match
 		if err != nil {
 			panic(err)
 		}
-		matchers = append(matchers, m)
+		ms = append(ms, m)
 	}
-	return matchers, el
+	return ms, el
 }
 
 func newSeriesSetFilter(ss storage.SeriesSet, toFilter model.LabelSet) storage.SeriesSet {
