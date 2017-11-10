@@ -107,6 +107,9 @@ func (s *Storage) ApplyConfig(conf *config.Config) error {
 
 		var fn QuerierFunc
 		fn = MakeQuerierFunc(c, conf.GlobalConfig.ExternalLabels)
+		if len(rrConf.Filter) > 0 {
+			fn = MatcherFilter(rrConf.Filter, fn)
+		}
 		if !rrConf.ReadRecent {
 			fn = PreferLocalFilter(s.localStartTimeCallback, fn)
 		}

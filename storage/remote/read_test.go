@@ -181,3 +181,90 @@ func TestPreferLocalFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestMatcherFilterQuerier(t *testing.T) {
+	ctx := context.Background()
+
+	fn := MatcherFilter(
+		model.LabelSet{"job": "custom"},
+		func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+			return testQuerier{ctx: ctx, mint: mint, maxt: maxt}, nil
+		},
+	)
+
+	want := &matcherFilterQuerier{
+		Querier:  testQuerier{ctx: ctx, mint: 0, maxt: 50},
+		labelSet: model.LabelSet{"job": "custom"},
+	}
+	have, err := fn(ctx, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(want, have) {
+		t.Errorf("expected quierer %+v, got %+v", want, have)
+	}
+}
+
+type mockSeriesSet struct {
+	storage.SeriesSet
+}
+
+type mockQuerier struct {
+	storage.Querier
+}
+
+func (mockQuerier) Select(...*labels.Matcher) storage.SeriesSet {
+	return mockSeriesSet{}
+}
+
+func TestMatcherFilterQuerierSelect(t *testing.T) {
+	tests := []struct {
+		filter    model.LabelSet
+		matchers  []*labels.Matcher
+		seriesSet storage.SeriesSet
+	}{
+		{
+			filter: model.LabelSet{},
+			matchers: []*labels.Matcher{
+				mustNewLabelMatcher(labels.MatchEqual, "job", "special"),
+			},
+			seriesSet: mockSeriesSet{},
+		},
+		{
+			filter: model.LabelSet{"job": "custom"},
+			matchers: []*labels.Matcher{
+				mustNewLabelMatcher(labels.MatchEqual, "job", "special"),
+			},
+			seriesSet: storage.NoopSeriesSet(),
+		},
+		{
+			filter: model.LabelSet{"job": "custom", "setting": "something"},
+			matchers: []*labels.Matcher{
+				mustNewLabelMatcher(labels.MatchEqual, "job", "custom"),
+				mustNewLabelMatcher(labels.MatchEqual, "setting", "something"),
+				mustNewLabelMatcher(labels.MatchNotRegexp, "query", "complex"),
+			},
+			seriesSet: mockSeriesSet{},
+		},
+		{
+			filter: model.LabelSet{"job": "custom", "setting": "something"},
+			matchers: []*labels.Matcher{
+				mustNewLabelMatcher(labels.MatchEqual, "job", "custom"),
+				mustNewLabelMatcher(labels.MatchRegexp, "setting", "something"),
+				mustNewLabelMatcher(labels.MatchNotRegexp, "query", "complex"),
+			},
+			seriesSet: storage.NoopSeriesSet(),
+		},
+	}
+
+	for i, test := range tests {
+		q := &matcherFilterQuerier{
+			Querier:  mockQuerier{},
+			labelSet: test.filter,
+		}
+		if want, have := test.seriesSet, q.Select(test.matchers...); want != have {
+			t.Errorf("%d. expected series set %+v, got %+v", i+1, want, have)
+		}
+	}
+}

@@ -1496,6 +1496,11 @@ type RemoteReadConfig struct {
 	// values arbitrarily into the overflow maps of further-down types.
 	HTTPClientConfig HTTPClientConfig `yaml:",inline"`
 
+	// Filter is an optional list of equality matcher names and values which
+	// expressions have to include in order to be sent to the remote read
+	// endpoint.
+	Filter model.LabelSet `yaml:"filter,omitempty"`
+
 	// Catches all undefined fields and must be empty after parsing.
 	XXX map[string]interface{} `yaml:",inline"`
 }

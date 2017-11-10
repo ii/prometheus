@@ -85,6 +85,7 @@ var expectedConf = &Config{
 			URL:           mustParseURL("http://remote3/read"),
 			RemoteTimeout: model.Duration(1 * time.Minute),
 			ReadRecent:    false,
+			Filter:        model.LabelSet{"job": "special"},
 		},
 	},
 

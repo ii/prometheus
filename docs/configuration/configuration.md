@@ -1134,6 +1134,11 @@ likely in future releases.
 # The URL of the endpoint to query from.
 url: <string>
 
+# Filter is an optional list of equality matcher names and values which
+# expressions have to include in order to be sent to the remote read endpoint.
+filter:
+  [ <labelname>: <labelvalue> ... ]
+
 # Timeout for requests to the remote read endpoint.
 [ remote_timeout: <duration> | default = 30s ]
 

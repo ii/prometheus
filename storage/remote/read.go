@@ -43,6 +43,48 @@ func PreferLocalFilter(cb startTimeCallback, next QuerierFunc) QuerierFunc {
 	}
 }
 
+// MatcherFilter returns a QuerierFunc which creates a querier returning a
+// NoopSeriesSet for any Select call not having equality matchers matching the
+// given label set.
+func MatcherFilter(l model.LabelSet, next QuerierFunc) QuerierFunc {
+	return func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+		q, err := next(ctx, mint, maxt)
+		if err != nil {
+			return nil, err
+		}
+		return &matcherFilterQuerier{Querier: q, labelSet: l}, nil
+	}
+}
+
+// matcherFilterQuerier wraps a given storage.Querier, but returns NoopSeriesSet
+// for Select calls the list of matchers doesn't match the given label set.
+type matcherFilterQuerier struct {
+	storage.Querier
+
+	labelSet model.LabelSet
+}
+
+// Select returns a NoopSeriesSet if the given matchers don't include equality
+// matchers for the label set of the matcherFilterQuerier. Otherwise it'll call
+// the parent querier.
+func (q matcherFilterQuerier) Select(matchers ...*labels.Matcher) storage.SeriesSet {
+	ls := q.labelSet
+	for _, m := range matchers {
+		for k, v := range ls {
+			if m.Type == labels.MatchEqual && m.Name == string(k) && m.Value == string(v) {
+				delete(ls, k)
+			}
+		}
+		if len(ls) == 0 {
+			break
+		}
+	}
+	if len(ls) > 0 {
+		return storage.NoopSeriesSet()
+	}
+	return q.Querier.Select(matchers...)
+}
+
 // MakeQuerierFunc returns a QuerierFunc which creates a Querier using the given
 // remote.Client.
 func MakeQuerierFunc(c *Client, externalLabels model.LabelSet) QuerierFunc {
